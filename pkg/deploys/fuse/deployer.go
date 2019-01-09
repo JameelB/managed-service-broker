@@ -142,6 +142,14 @@ func (fd *FuseDeployer) LastOperation(instanceID string, k8sclient kubernetes.In
 			}, nil
 		}
 
+		state, description, err := fd.getPodStatus("syndesis-operator", namespace, dcClient)
+		if state != brokerapi.StateSucceeded {
+			return &brokerapi.LastOperationResponse{
+				State:       state,
+				Description: description,
+			}, err
+		}
+
 		for _, v := range podsToWatch {
 			state, description, err := fd.getPodStatus(v, namespace, dcClient)
 			if state != brokerapi.StateSucceeded {
