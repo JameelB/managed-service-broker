@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"k8s.io/api/authentication/v1"
 
@@ -132,6 +133,7 @@ func (fd *FuseDeployer) LastOperation(instanceID string, k8sclient kubernetes.In
 	namespace := "fuse-" + instanceID
 	switch operation {
 	case "deploy":
+		glog.Infof("[LAST OPERATION:DEPLOY] Doing last operation for fuse: %s", namespace)
 		podsToWatch := []string{"syndesis-oauthproxy", "syndesis-server", "syndesis-ui"}
 		dcClient, err := osclient.AppsClient()
 		if err != nil {
@@ -139,20 +141,32 @@ func (fd *FuseDeployer) LastOperation(instanceID string, k8sclient kubernetes.In
 			return &brokerapi.LastOperationResponse{
 				State:       brokerapi.StateFailed,
 				Description: "Failed to create an openshift deployment config client",
-			}, nil
+			}, errors.Wrap(err, "failed to create an openshift deployment config client")
 		}
 
-		state, description, err := fd.getPodStatus("syndesis-operator", namespace, dcClient)
-		if state != brokerapi.StateSucceeded {
+		nsObj, err := k8sclient.CoreV1().Namespaces().Get(namespace, metav1.GetOptions{})
+		if err != nil {
+			glog.Infof("[LAST OPERATION:DEPLOY] Failed to get namespace obj for fuse: %s, returning in progress", namespace)
 			return &brokerapi.LastOperationResponse{
-				State:       state,
-				Description: description,
-			}, err
+				State:       brokerapi.StateFailed,
+				Description: "Failed to get namespace " + namespace + " for last operation check",
+			}, errors.Wrap(err, "failed to get namespace "+namespace+" for last operation check")
+		}
+
+		young := false
+		if time.Since(nsObj.ObjectMeta.CreationTimestamp.Time).Seconds() <= 120 {
+			young = true
 		}
 
 		for _, v := range podsToWatch {
 			state, description, err := fd.getPodStatus(v, namespace, dcClient)
 			if state != brokerapi.StateSucceeded {
+				if young {
+					glog.Infof("[LAST OPERATION:DEPLOY] %s namespace is younger that 120 secs, returning in progress", namespace)
+					err = nil
+					state = brokerapi.StateInProgress
+				}
+				glog.Infof("[LAST OPERATION:DEPLOY] %s namespace is older that 120 secs, returning actual state", namespace)
 				return &brokerapi.LastOperationResponse{
 					State:       state,
 					Description: description,
@@ -160,6 +174,7 @@ func (fd *FuseDeployer) LastOperation(instanceID string, k8sclient kubernetes.In
 			}
 		}
 
+		glog.Infof("[LAST OPERATION:DEPLOY] fuse %s deployed successfully ", namespace)
 		return &brokerapi.LastOperationResponse{
 			State:       brokerapi.StateSucceeded,
 			Description: "fuse deployed successfully",
